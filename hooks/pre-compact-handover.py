@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """
-PreCompact Hook: HANDOVER.md auto-generator
-Auto-compaction前にセッションの引き継ぎドキュメントを自動生成する。
-過去3セッション分のtranscriptを累積分析し、文脈の連続性を保った引き継ぎを作成。
+PreCompact Hook: HANDOVER auto-generator
+Auto-compaction前やhandover_updateコマンドでセッションの引き継ぎドキュメントを生成する。
 
-stdin: JSON payload (session_id, transcript_path, cwd, trigger, ...)
-output: HANDOVER.md を cwd に書き出し
+過去コンテキストソース:
+  - 過去ハンドオーバーファイル（デフォルト1件、~5KB）
+  - 当セッションのtranscript（末尾60KB）
+
+ファイル命名: HANDOVER-{sid}-{YYYYMMDD-HHMMSS}.md（常にタイムスタンプ付き）
+
+stdin: JSON payload (session_id, transcript_path, cwd, ...)
+output: HANDOVER-{sid}-{datetime}.md を cwd に書き出し
 """
 import sys
 import json
 import subprocess
 import os
+import glob as glob_mod
 from datetime import date, datetime
 
 
@@ -27,32 +33,27 @@ def read_transcript_tail(path, max_bytes):
         return ""
 
 
-def find_past_transcripts(transcript_path, session_id, count=2):
-    """現在のセッション以外の同一セッションのtranscriptファイルを取得"""
-    project_dir = os.path.dirname(transcript_path)
-    if not os.path.isdir(project_dir):
+def find_past_handovers(cwd, session_id, count=1):
+    """過去のハンドオーバーファイルを取得（全セッション対象、最新N件）"""
+    pattern = os.path.join(cwd, "HANDOVER-*-*.md")
+    files = glob_mod.glob(pattern)
+    if not files:
         return []
 
-    current_basename = os.path.basename(transcript_path)
     sid_prefix = session_id[:8] if session_id else ""
-    jsonl_files = []
-    for f in os.listdir(project_dir):
-        if not f.endswith(".jsonl"):
-            continue
-        if f == current_basename:
-            continue
-        # 自分のセッションIDに一致するもののみ（他セッションの文脈混入を防止）
-        if sid_prefix and not f.startswith(sid_prefix):
-            continue
-        full_path = os.path.join(project_dir, f)
-        # 5KB未満のファイルはスキップ（些末なセッション）
-        if os.path.getsize(full_path) < 5000:
-            continue
-        jsonl_files.append((full_path, os.path.getmtime(full_path)))
+    # 自セッションの最新は除外候補（生成直後に自分を読まないように）
+    # ただし過去の自セッション分は含める
+    files.sort(key=os.path.getmtime, reverse=True)
+    return files[:count]
 
-    # 更新日時の新しい順にソート
-    jsonl_files.sort(key=lambda x: x[1], reverse=True)
-    return [path for path, _ in jsonl_files[:count]]
+
+def read_file(path):
+    """ファイルを読み込む"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return ""
 
 
 def main():
@@ -70,26 +71,26 @@ def main():
     if not cwd or not os.path.isdir(cwd):
         sys.exit(0)
 
-    # 現在のセッション: 末尾60KB
+    # 当セッション transcript: 末尾60KB
     current_transcript = read_transcript_tail(transcript_path, 60_000)
     if not current_transcript.strip():
         sys.exit(0)
 
-    # 過去2セッション: 各末尾20KB
-    past_paths = find_past_transcripts(transcript_path, session_id, count=2)
+    # 過去ハンドオーバー: 直近1件（~5KB、transcript解析より大幅に軽量）
+    past_handover_paths = find_past_handovers(cwd, session_id, count=1)
     past_sections = []
-    for i, past_path in enumerate(past_paths):
-        sid = os.path.basename(past_path).replace(".jsonl", "")[:8]
-        content = read_transcript_tail(past_path, 20_000)
+    for path in past_handover_paths:
+        filename = os.path.basename(path)
+        content = read_file(path)
         if content.strip():
-            past_sections.append(f"### 過去セッション {i+1} (session: {sid})\n{content}")
+            past_sections.append(f"### 過去ハンドオーバー: {filename}\n{content}")
 
-    past_context = "\n\n".join(past_sections) if past_sections else "(過去セッションデータなし)"
+    past_context = "\n\n".join(past_sections) if past_sections else "(過去ハンドオーバーなし)"
     past_count = len(past_sections)
 
     today = date.today().isoformat()
-    prompt = f"""以下のClaude Codeセッションの会話履歴（JSONL）を分析し、引き継ぎドキュメントを生成せよ。
-現在のセッションに加え、過去{past_count}セッション分のデータも提供する。
+    prompt = f"""以下のClaude Codeセッションの会話履歴（JSONL）と過去のハンドオーバーを分析し、引き継ぎドキュメントを生成せよ。
+当セッションの会話履歴に加え、過去{past_count}件のハンドオーバーも提供する。
 累積的な分析を行い、セッション間の文脈の連続性と繰り返しパターンを把握すること。
 
 ## 出力フォーマット（このまま出力）
@@ -112,7 +113,7 @@ Directory: {cwd}
 ## 注意・ピットフォール
 （セッション中に発見した罠、失敗パターン）
 
-## 累積コンテキスト（過去3セッション分析）
+## 累積コンテキスト
 - 繰り返し発生している問題:
 - セッション間で蓄積された決定事項:
 - 次に優先すべきタスクTop3:
@@ -124,12 +125,12 @@ Directory: {cwd}
 - 前置き不要。即座にMarkdownを出力
 - 日本語で記述
 - 「達成事項」「未完了の作業」「次セッションへの指示」「注意・ピットフォール」は現在のセッションを中心に記述
-- 「累積コンテキスト」は過去セッションも含めた横断分析。繰り返しミス・蓄積された決定・優先タスクを抽出
+- 「累積コンテキスト」は過去ハンドオーバーの情報を引き継ぎつつ、現セッションの成果を統合
 
-## 現在のセッション会話履歴
+## 当セッション会話履歴
 {current_transcript}
 
-## 過去セッションのデータ
+## 過去ハンドオーバー
 {past_context}"""
 
     # CLAUDECODE環境変数を除去（ネストセッション制限の回避）
@@ -152,16 +153,8 @@ Directory: {cwd}
         sys.exit(1)
 
     sid_short = session_id[:8]
-    handover_path = os.path.join(cwd, f"HANDOVER-{sid_short}.md")
-
-    # 既存ファイルがあればタイムスタンプ付きにアーカイブ
-    if os.path.isfile(handover_path):
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        archived = os.path.join(cwd, f"HANDOVER-{sid_short}-{ts}.md")
-        try:
-            os.rename(handover_path, archived)
-        except Exception:
-            pass
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    handover_path = os.path.join(cwd, f"HANDOVER-{sid_short}-{ts}.md")
 
     try:
         with open(handover_path, "w", encoding="utf-8") as f:
@@ -169,8 +162,9 @@ Directory: {cwd}
     except Exception:
         sys.exit(1)
 
-    print(f"[handover_update] HANDOVER-{sid_short}.md generated ({1 + past_count} sessions analyzed)")
-    print(f"[handover_update] HANDOVER-{sid_short}.md generated", file=sys.stderr)
+    filename = os.path.basename(handover_path)
+    print(f"[handover_update] {filename} generated (transcript + {past_count} past handovers)")
+    print(f"[handover_update] {filename} generated", file=sys.stderr)
 
 
 if __name__ == "__main__":

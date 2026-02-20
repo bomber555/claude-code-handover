@@ -2,7 +2,7 @@
 
 Claude Code のセッション引き継ぎ（ハンドオーバー）を自動化するフックスクリプト。
 
-`/compact` 時やセッション復帰時に、会話履歴から引き継ぎドキュメント（`HANDOVER-{session_id}.md`）を自動生成・読み込みする。
+`/compact` 時やセッション復帰時に、会話履歴から引き継ぎドキュメント（`HANDOVER-{sid}-{datetime}.md`）を自動生成・読み込みする。
 
 ## 機能
 
@@ -10,13 +10,13 @@ Claude Code のセッション引き継ぎ（ハンドオーバー）を自動�
 |---|---|---|
 | `/compact` | ハンドオーバー自動生成 → compact 後に自動読み込み | PreCompact フック |
 | `handover_update` | ハンドオーバーを手動生成（compact 不要） | UserPromptSubmit matcher |
-| `handover_read` | 最新のハンドオーバーを手動読み込み | UserPromptSubmit matcher |
+| `handover_read` | 当セッションの最新ハンドオーバーを手動読み込み | UserPromptSubmit matcher |
 
 ## ファイル構成
 
 ```
 hooks/
-  pre-compact-handover.py   # ハンドオーバー生成（transcript → HANDOVER-{sid}.md）
+  pre-compact-handover.py   # ハンドオーバー生成（transcript + 過去ハンドオーバー → HANDOVER-{sid}-{datetime}.md）
   post-compact-handover.py  # ハンドオーバー読み込み（自動 / 手動）
 settings.example.json       # ~/.claude/settings.json に追加するフック設定
 ```
@@ -43,27 +43,32 @@ chmod +x ~/.claude/hooks/post-compact-handover.py
 ### 生成（pre-compact-handover.py）
 
 1. 現在のセッションの transcript（末尾 60KB）を読み込み
-2. 同一セッション ID の過去 transcript があれば追加読み込み（末尾 20KB × 最大2件）
+2. 過去のハンドオーバーファイル（直近 1 件、~5KB）を読み込み
 3. Claude Sonnet に引き継ぎドキュメント生成を依頼
-4. `HANDOVER-{session_id[:8]}.md` として作業ディレクトリに出力
-5. 既存ファイルはタイムスタンプ付きにアーカイブ
+4. `HANDOVER-{sid}-{YYYYMMDD-HHMMSS}.md` として作業ディレクトリに出力
 
 ### 読み込み（post-compact-handover.py）
 
 **自動モード**（空 matcher、毎回 UserPromptSubmit で発火）:
-- `HANDOVER-{session_id}.md` が存在すれば読み込み → タイムスタンプ付きにアーカイブ
+- 当セッションの最新 `HANDOVER-{sid}-*.md` を読み込み
 - compact 直後の初回メッセージで自動的にコンテキストに注入される
 
 **手動モード**（`handover_read` matcher）:
-- 作業ディレクトリ内の最新 `HANDOVER-*.md` を読み込み（アーカイブしない）
-- 別セッションのハンドオーバーも読める
+- 当セッションの最新 `HANDOVER-{sid}-*.md` を読み込み
+- `[handover_read]` ラベル付きで表示
 
 ### ファイル命名規則
 
-| 状態 | ファイル名 |
-|---|---|
-| 最新（未読み込み） | `HANDOVER-{sid}.md` |
-| アーカイブ済み | `HANDOVER-{sid}-{YYYYMMDD-HHMMSS}.md` |
+すべてのハンドオーバーファイルは作成時からタイムスタンプ付き:
+
+```
+HANDOVER-{sid}-{YYYYMMDD-HHMMSS}.md
+```
+
+- `{sid}`: セッション ID の先頭 8 文字
+- `{YYYYMMDD-HHMMSS}`: 生成日時
+
+アーカイブ処理は不要。全ファイルが自動的に保持される。
 
 ## ハンドオーバードキュメントの構成
 
@@ -77,8 +82,10 @@ chmod +x ~/.claude/hooks/post-compact-handover.py
 
 ## 設計判断
 
-- **セッション ID フィルタ**: 過去 transcript の読み込みは同一セッション ID に限定。異なるセッションの文脈が混入しない
-- **自動モードはラベルなし**: 空 matcher で毎回発火する自動モードは `[auto]` ラベルのみ（stderr）。手動コマンド時のみ `[handover_read]` / `[handover_update]` ラベルを表示
+- **セッション ID フィルタ**: 読み込み・生成ともにセッション ID でフィルタ。異なるセッションの文脈が混入しない
+- **過去コンテキストはハンドオーバーファイルから**: transcript 全文（~40KB）ではなく過去ハンドオーバー（~5KB）を読むことでトークン消費を大幅削減
+- **タイムスタンプ付き命名**: 作成時から `{sid}-{datetime}` 形式。アーカイブのリネーム処理が不要で全ファイルが保持される
+- **自動モードはラベルなし**: 空 matcher で毎回発火する自動モードはラベルなし（stderr のみ `[auto]`）。手動コマンド時のみ `[handover_read]` / `[handover_update]` ラベルを表示
 - **生成に Claude Sonnet を使用**: transcript 解析と引き継ぎ文書生成を `claude -p --model sonnet` で実行（タイムアウト 300秒）
 
 ## 必要条件
