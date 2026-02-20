@@ -11,6 +11,7 @@ Claude Code のセッション引き継ぎ（ハンドオーバー）を自動�
 | `/compact` | ハンドオーバー自動生成 → compact 後に自動読み込み | PreCompact フック |
 | `handover_update` | ハンドオーバーを手動生成（compact 不要） | UserPromptSubmit matcher |
 | `handover_read` | 当セッションの最新ハンドオーバーを手動読み込み | UserPromptSubmit matcher |
+| `handover_refresh` | 過去 transcript から再生成（リカバリー用） | UserPromptSubmit matcher |
 
 ## ファイル構成
 
@@ -79,6 +80,16 @@ HANDOVER-{sid}-{YYYYMMDD-HHMMSS}.md
 - **次セッションへの指示** — 最初に実行すべきコマンド、優先順位、触ってはいけないもの
 - **注意・ピットフォール** — 発見した罠、失敗パターン
 - **累積コンテキスト** — 繰り返し問題、蓄積された決定事項、優先タスク Top3
+
+### リフレッシュモード（handover_refresh）
+
+ハンドオーバーファイルが破損・紛失した場合のリカバリー用モード。
+
+1. 当セッションの transcript（末尾 100KB）を読み込み
+2. 過去セッションの transcript（直近 2 件、各末尾 20KB）を読み込み
+3. Claude Sonnet に引き継ぎドキュメント生成を依頼
+
+通常モードより多くのトークンを消費するため、リカバリー目的でのみ使用すること。
 
 ## 設計判断
 

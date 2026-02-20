@@ -3,9 +3,12 @@
 PreCompact Hook: HANDOVER auto-generator
 Auto-compaction前やhandover_updateコマンドでセッションの引き継ぎドキュメントを生成する。
 
-過去コンテキストソース:
-  - 過去ハンドオーバーファイル（デフォルト1件、~5KB）
-  - 当セッションのtranscript（末尾60KB）
+通常モード（デフォルト）:
+  過去コンテキスト: 過去ハンドオーバーファイル（1件、~5KB） + 当セッションtranscript（末尾60KB）
+
+リフレッシュモード（--from-transcripts）:
+  過去コンテキスト: 過去transcript（2件、各末尾20KB） + 当セッションtranscript（末尾100KB）
+  ハンドオーバーファイル破損・紛失時のリカバリー用
 
 ファイル命名: HANDOVER-{sid}-{YYYYMMDD-HHMMSS}.md（常にタイムスタンプ付き）
 
@@ -31,6 +34,31 @@ def read_transcript_tail(path, max_bytes):
             return f.read()
     except Exception:
         return ""
+
+
+def find_past_transcripts(transcript_path, session_id, count=2, max_bytes=20_000):
+    """過去セッションのtranscriptを取得（リフレッシュモード用）"""
+    transcript_dir = os.path.dirname(transcript_path)
+    current_filename = os.path.basename(transcript_path)
+    sid_prefix = session_id[:8] if session_id else ""
+
+    try:
+        files = [f for f in os.listdir(transcript_dir) if f.endswith(".jsonl")]
+    except Exception:
+        return []
+
+    # 自セッションのtranscriptを除外
+    files = [f for f in files if f != current_filename]
+    # フルパスに変換してmtimeでソート
+    full_paths = [os.path.join(transcript_dir, f) for f in files]
+    full_paths.sort(key=os.path.getmtime, reverse=True)
+
+    results = []
+    for path in full_paths[:count]:
+        content = read_transcript_tail(path, max_bytes)
+        if content.strip():
+            results.append((os.path.basename(path), content))
+    return results
 
 
 def find_past_handovers(cwd, session_id, count=1):
@@ -71,22 +99,39 @@ def main():
     if not cwd or not os.path.isdir(cwd):
         sys.exit(0)
 
-    # 当セッション transcript: 末尾60KB
-    current_transcript = read_transcript_tail(transcript_path, 60_000)
-    if not current_transcript.strip():
-        sys.exit(0)
+    refresh_mode = "--from-transcripts" in sys.argv
 
-    # 過去ハンドオーバー: 直近1件（~5KB、transcript解析より大幅に軽量）
-    past_handover_paths = find_past_handovers(cwd, session_id, count=1)
-    past_sections = []
-    for path in past_handover_paths:
-        filename = os.path.basename(path)
-        content = read_file(path)
-        if content.strip():
-            past_sections.append(f"### 過去ハンドオーバー: {filename}\n{content}")
+    if refresh_mode:
+        # リフレッシュモード: transcript重視（当セッション100KB + 過去transcript 2件×20KB）
+        current_transcript = read_transcript_tail(transcript_path, 100_000)
+        if not current_transcript.strip():
+            sys.exit(0)
 
-    past_context = "\n\n".join(past_sections) if past_sections else "(過去ハンドオーバーなし)"
-    past_count = len(past_sections)
+        past_transcripts = find_past_transcripts(transcript_path, session_id, count=2, max_bytes=20_000)
+        past_sections = []
+        for filename, content in past_transcripts:
+            past_sections.append(f"### 過去transcript: {filename}\n{content}")
+
+        past_context = "\n\n".join(past_sections) if past_sections else "(過去transcriptなし)"
+        past_count = len(past_sections)
+        past_label = "past transcripts"
+    else:
+        # 通常モード: 当セッションtranscript(60KB) + 過去ハンドオーバー(1件)
+        current_transcript = read_transcript_tail(transcript_path, 60_000)
+        if not current_transcript.strip():
+            sys.exit(0)
+
+        past_handover_paths = find_past_handovers(cwd, session_id, count=1)
+        past_sections = []
+        for path in past_handover_paths:
+            filename = os.path.basename(path)
+            content = read_file(path)
+            if content.strip():
+                past_sections.append(f"### 過去ハンドオーバー: {filename}\n{content}")
+
+        past_context = "\n\n".join(past_sections) if past_sections else "(過去ハンドオーバーなし)"
+        past_count = len(past_sections)
+        past_label = "past handovers"
 
     today = date.today().isoformat()
     prompt = f"""以下のClaude Codeセッションの会話履歴（JSONL）と過去のハンドオーバーを分析し、引き継ぎドキュメントを生成せよ。
@@ -163,8 +208,9 @@ Directory: {cwd}
         sys.exit(1)
 
     filename = os.path.basename(handover_path)
-    print(f"[handover_update] {filename} generated (transcript + {past_count} past handovers)")
-    print(f"[handover_update] {filename} generated", file=sys.stderr)
+    mode_label = "handover_refresh" if refresh_mode else "handover_update"
+    print(f"[{mode_label}] {filename} generated (transcript + {past_count} {past_label})")
+    print(f"[{mode_label}] {filename} generated", file=sys.stderr)
 
 
 if __name__ == "__main__":

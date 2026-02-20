@@ -30,6 +30,17 @@
             "statusMessage": "HANDOVER-{sid}.md を生成中..."
           }
         ]
+      },
+      {
+        "matcher": "handover_refresh",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/pre-compact-handover.py --from-transcripts",
+            "timeout": 300,
+            "statusMessage": "HANDOVER を transcript から再生成中..."
+          }
+        ]
       }
     ],
     "PreCompact": [
