@@ -1,0 +1,49 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/post-compact-handover.py"
+          }
+        ]
+      },
+      {
+        "matcher": "handover_read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/post-compact-handover.py --load",
+            "statusMessage": "HANDOVER を読み込み中..."
+          }
+        ]
+      },
+      {
+        "matcher": "handover_update",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/pre-compact-handover.py",
+            "timeout": 300,
+            "statusMessage": "HANDOVER-{sid}.md を生成中..."
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/pre-compact-handover.py",
+            "timeout": 300,
+            "statusMessage": "HANDOVER-{sid}.md を生成中..."
+          }
+        ]
+      }
+    ]
+  }
+}
