@@ -7,7 +7,7 @@ Auto-compaction前やhandover_updateコマンドでセッションの引き継�
   過去コンテキスト: 過去ハンドオーバーファイル（1件、~5KB） + 当セッションtranscript（末尾60KB）
 
 リフレッシュモード（--from-transcripts）:
-  過去コンテキスト: 過去transcript（2件、各末尾20KB） + 当セッションtranscript（末尾100KB）
+  当セッションtranscript（末尾500KB）のみ。過去ハンドオーバー不使用。
   ハンドオーバーファイル破損・紛失時のリカバリー用
 
 ファイル命名: HANDOVER-{sid}-{YYYYMMDD-HHMMSS}.md（常にタイムスタンプ付き）
@@ -35,30 +35,6 @@ def read_transcript_tail(path, max_bytes):
     except Exception:
         return ""
 
-
-def find_past_transcripts(transcript_path, session_id, count=2, max_bytes=20_000):
-    """過去セッションのtranscriptを取得（リフレッシュモード用）"""
-    transcript_dir = os.path.dirname(transcript_path)
-    current_filename = os.path.basename(transcript_path)
-    sid_prefix = session_id[:8] if session_id else ""
-
-    try:
-        files = [f for f in os.listdir(transcript_dir) if f.endswith(".jsonl")]
-    except Exception:
-        return []
-
-    # 自セッションのtranscriptを除外
-    files = [f for f in files if f != current_filename]
-    # フルパスに変換してmtimeでソート
-    full_paths = [os.path.join(transcript_dir, f) for f in files]
-    full_paths.sort(key=os.path.getmtime, reverse=True)
-
-    results = []
-    for path in full_paths[:count]:
-        content = read_transcript_tail(path, max_bytes)
-        if content.strip():
-            results.append((os.path.basename(path), content))
-    return results
 
 
 def find_past_handovers(cwd, session_id, count=1):
@@ -102,19 +78,14 @@ def main():
     refresh_mode = "--from-transcripts" in sys.argv
 
     if refresh_mode:
-        # リフレッシュモード: transcript重視（当セッション100KB + 過去transcript 2件×20KB）
-        current_transcript = read_transcript_tail(transcript_path, 100_000)
+        # リフレッシュモード: 当セッションtranscript末尾500KBのみ（リカバリー用）
+        current_transcript = read_transcript_tail(transcript_path, 500_000)
         if not current_transcript.strip():
             sys.exit(0)
 
-        past_transcripts = find_past_transcripts(transcript_path, session_id, count=2, max_bytes=20_000)
-        past_sections = []
-        for filename, content in past_transcripts:
-            past_sections.append(f"### 過去transcript: {filename}\n{content}")
-
-        past_context = "\n\n".join(past_sections) if past_sections else "(過去transcriptなし)"
-        past_count = len(past_sections)
-        past_label = "past transcripts"
+        past_context = "(リフレッシュモード: 当セッション transcript のみ)"
+        past_count = 0
+        past_label = "transcript only"
     else:
         # 通常モード: 当セッションtranscript(60KB) + 過去ハンドオーバー(1件)
         current_transcript = read_transcript_tail(transcript_path, 60_000)
